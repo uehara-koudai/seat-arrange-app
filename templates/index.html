@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>席替えAI</title>
+  <!-- Sortable.jsの追加 -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <style>
+    /* レイアウト */
+    .container {
+      display: none; /* 初期は非表示 */
+      gap: 20px;
+      margin: 20px 0;
+    }
+    .left-pane {
+      border: 2px solid #333;
+      padding: 10px;
+      min-width: 300px;
+      flex-grow: 1;
+      position: relative; /* 座席マップと重ねるために relative */
+    }
+
+    /* 座席マップ */
+    .seat-map {
+      border: 1px solid #666;
+      position: relative;
+      height: 300px;
+      background: #f0f0f0;
+      margin-bottom: 10px;
+      user-select: none;
+      overflow: visible; /* ボタンを隠さない */
+      z-index: 1;
+    }
+
+
+    /* マップのリサイズボタン */
+    .resize-handle {
+      width: 20px;
+      height: 20px;
+      background: white;
+      border: 2px solid #444; /* 白枠の丸 */
+      border-radius: 50%; /* 丸にする */
+      position: absolute;
+      bottom: -10px; /* 位置調整 */
+      right: -10px;  
+      cursor: nwse-resize;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    /* 矢印アイコンの追加 */
+    .resize-handle::after {
+      content: "⤡"; /* 斜め向きの双頭矢印 */
+      font-size: 20px;
+      color: #444;
+    }
+
+
+
+    .seat {
+      position: absolute;
+      width: 60px;
+      height: 40px;
+      background: #fff;
+      border: 2px solid #444;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: 0.2s;
+      cursor: move; /* 席自体をドラッグ可能にする */
+    }
+
+    .right-pane {
+      border: 2px solid #333;
+      padding: 10px;
+      min-width: 300px;
+    }
+    .preferences-area {
+      border: 1px solid #666;
+      padding: 5px;
+      margin-top: 10px;
+      max-height: 400px; /* 上限を設ける */
+      overflow-y: auto; /* 縦スクロール可能に */
+    }
+
+    .sortable-list {
+      list-style: none;
+      padding: 0;
+      border: 1px solid #ccc;
+      min-height: 40px;
+      margin: 5px 0;
+    }
+    .sortable-item {
+      border: 1px solid #aaa;
+      padding: 5px 10px;
+      margin: 2px;
+      background: #eef;
+      cursor: move;
+    }
+    .sortable-ghost {
+      opacity: 0.6;
+      background: #ff0;
+    }
+
+    /* ボタン類を初期非表示にする */
+    #preferenceBtn,
+    #callApiBtn {
+      display: none; /* 初期は非表示 */
+    }
+  </style>
+</head>
+<body>
+  <h1>席替えAI</h1>
+
+  <!-- 人数とモデル選択 -->
+  <div>
+    <!-- 人数Nを入力 -->
+    <label>人数: 
+      <input id="inputN" type="number" value="4" min="1">
+    </label>
+    <span style="margin-right: 20px;"></span>
+    <label>AIモデル(1=ガウス, 2=逆二乗): 
+      <input id="inputM" type="number" value="1" min="1" max="2">
+    </label>
+  </div>
+
+  <!-- (A) 座標入力欄生成ボタン -->
+  <p>
+    <button id="coordBtn" onclick="setupCoordinates()">座席の座標を決める</button>
+  </p>
+
+  <!-- (B) 座標入力欄 -->
+  <div id="coordinateInputs"></div>
+
+  <!-- (C) 希望配置入力欄生成ボタン （最初は非表示）-->
+  <p>
+    <button id="preferenceBtn" onclick="setupSeatPreferences()">希望配置を決める</button>
+  </p>
+
+  <!-- (D) 左(座席) & 右(希望配置) -->
+  <div class="container">
+    <div class="left-pane">
+      <div id="seatMap" class="seat-map">
+        <div id="resizeHandle" class="resize-handle"></div> <!-- 追加 -->
+      </div>
+    </div>
+    <div class="right-pane">
+      <div id="preferencesArea" class="preferences-area"></div>
+    </div>
+  </div>
+
+
+  <!-- (E) 計算実行ボタン （非表示）-->
+  <p>
+    <button id="callApiBtn" onclick="callApi()">計算実行</button>
+  </p>
+
+  <pre id="result"></pre>
+
+
+
+
+<!-- javascript -->
+<script>
+  let seatCoordinate = [];       // [[x,y], [x,y], ...]
+  let seatPreferenceList = [];   // [[seatID順序], ..., [seatID順序]]
+
+  // グリッドや座標計算用の変数
+  let scale = 1;
+  let maxX = 0, maxY = 0;
+  const MARGIN = 40;
+  let svgGrid = null;           // 一度描画したSVGグリッドを保持
+  const seatMapEl = document.getElementById("seatMap");
+  const prefsAreaEl = document.getElementById("preferencesArea");
+
+  // ============ (1) 座標入力欄を生成 ============
+  function setupCoordinates() {
+    const N = +document.getElementById("inputN").value;
+    const coordDiv = document.getElementById("coordinateInputs");
+    coordDiv.innerHTML = "";
+
+    // (a) 希望配置ボタンを表示
+    document.getElementById("preferenceBtn").style.display = "inline-block";
+    // document.getElementById("callApiBtn").style.display = "inline-block";　ここでは非表示
+    // (b) マップ & 右ペインを表示
+    document.querySelector(".container").style.display = "flex";
+
+    // (c) 座標の初期化 & 入力フォームを作成
+    seatCoordinate = [];
+    const seatsPerRow = 6; // 1行に配置する座席数
+    for (let i = 0; i < N; i++) {
+      let x = i % seatsPerRow; // 6個ごとに折り返し
+      let y = Math.floor(i / seatsPerRow); // 行数（0行目, 1行目, 2行目…）
+      seatCoordinate.push([x, y]);
+    }
+
+
+    // 既存のSVGグリッドを消去
+    seatMapEl.innerHTML = "";
+    svgGrid = null; // グリッド再作成フラグ
+
+    for (let i = 0; i < N; i++) {
+      let label = document.createElement("label");
+      label.textContent = `座席${i} の座標: `;
+
+      let xInput = document.createElement("input");
+      xInput.type = "number";
+      xInput.placeholder = "x座標";
+      xInput.id = `coordX_${i}`;
+      xInput.value = seatCoordinate[i][0];
+      xInput.min = "0"; // 負の値を禁止
+
+      let yInput = document.createElement("input");
+      yInput.type = "number";
+      yInput.placeholder = "y座標";
+      yInput.id = `coordY_${i}`;
+      yInput.value = seatCoordinate[i][1];
+      yInput.min = "0"; // 負の値を禁止
+
+      coordDiv.appendChild(label);
+      coordDiv.appendChild(xInput);
+      coordDiv.appendChild(yInput);
+      coordDiv.appendChild(document.createElement("br"));
+
+      xInput.addEventListener("input", () => {
+        let newValue = parseFloat(xInput.value) || 0;
+        if (newValue < 0) newValue = 0; // 負の値なら 0 に修正
+        xInput.value = newValue;
+        seatCoordinate[i][0] = newValue;
+        updateAllSeats();
+      });
+
+      yInput.addEventListener("input", () => {
+        let newValue = parseFloat(yInput.value) || 0;
+        if (newValue < 0) newValue = 0; // 負の値なら 0 に修正
+        yInput.value = newValue;
+        seatCoordinate[i][1] = newValue;
+        updateAllSeats();
+      });
+    }
+
+    // 初回全再描画
+    updateAllSeats();
+    
+    // リサイズハンドルが存在しない場合は追加
+    if (!document.getElementById("resizeHandle")) {
+      const resizeHandle = document.createElement("div");
+      resizeHandle.id = "resizeHandle";
+      resizeHandle.className = "resize-handle";
+      seatMapEl.appendChild(resizeHandle);
+
+      // ここで `resizeHandle` にイベントを登録
+      registerResizeEvent();
+
+    }
+
+  }
+
+  // ============ (2) 全座席をまとめて再描画 (入力欄変更時に呼ぶ) ============
+  function updateAllSeats() {
+    const N = +document.getElementById("inputN").value;
+    
+    // (1) 現在の座席要素を削除（resizeHandleは残す）
+    const seats = seatMapEl.querySelectorAll(".seat");
+    seats.forEach(seat => seat.remove());
+
+    // (2) 以前のグリッドを削除
+    if (svgGrid) {
+      svgGrid.remove();
+    }
+
+    svgGrid = null; // グリッドを毎回作り直す
+
+    // **行数を計算**
+    const seatsPerRow = 6;
+    const numRows = Math.ceil(N / seatsPerRow);
+
+    // **(1) `seat-map` の高さを動的に変更**
+    const baseHeight = 300;  // デフォルトの高さ
+    const extraHeightPerRow = 60;  // 追加する高さ
+    if (numRows > 5) {
+        seatMapEl.style.height = `${baseHeight + (numRows - 5) * extraHeightPerRow}px`;
+    } else {
+        seatMapEl.style.height = `${baseHeight}px`;
+    }
+
+    // **(2) スケール計算**
+    [maxX, maxY] = [0, 0];
+    seatCoordinate.forEach(([x, y]) => {
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+    });
+    if (maxX < 1) maxX = 1;
+    if (maxY < 1) maxY = 1;
+
+    const mapW = seatMapEl.clientWidth - (MARGIN * 2);
+    const mapH = seatMapEl.clientHeight - (MARGIN * 2);
+    scale = Math.min(mapW / maxX, mapH / maxY);
+
+    // **(3) SEAT_SIZE を統一的に決定**
+    SEAT_SIZE = scale * 0.9;
+
+    // **(4) SVGグリッドを作り直す**
+    svgGrid = createGrid(maxX, maxY, scale);
+    seatMapEl.appendChild(svgGrid);
+
+    // **(5) 座席をすべて配置**
+    for (let i = 0; i < N; i++) {
+        createSeatElement(i);
+    }
+
+    // **(6) ドロップ領域の設定(再設定)**
+    seatMapEl.addEventListener("dragover", handleDragOver);
+    seatMapEl.addEventListener("drop", handleDrop); 
+  }
+
+
+
+  // ============ (3) SVGグリッドを作る ============
+  function createGrid(mx, my, scaleVal) {
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.style.position = "absolute";
+    svg.style.width = "100%";
+    svg.style.height = "100%";
+    svg.style.top = "0";
+    svg.style.left = "0";
+
+    for (let x = 0; x <= mx; x++) {
+      let lineV = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      let px = MARGIN + x * scaleVal;
+      lineV.setAttribute("x1", px);
+      lineV.setAttribute("y1", MARGIN);
+      lineV.setAttribute("x2", px);
+      lineV.setAttribute("y2", MARGIN + my * scaleVal);
+      lineV.setAttribute("stroke", "#ddd");
+      svg.appendChild(lineV);
+    }
+    for (let y = 0; y <= my; y++) {
+      let lineH = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      let py = MARGIN + y * scaleVal;
+      lineH.setAttribute("x1", MARGIN);
+      lineH.setAttribute("y1", py);
+      lineH.setAttribute("x2", MARGIN + mx * scaleVal);
+      lineH.setAttribute("y2", py);
+      lineH.setAttribute("stroke", "#ddd");
+      svg.appendChild(lineH);
+    }
+    return svg;
+  }
+
+
+  // ============ (4) 座席を1つ作成して追加 ============
+  function createSeatElement(seatIndex) {
+    const [xx, yy] = seatCoordinate[seatIndex];
+    const seatDiv = document.createElement("div");
+    seatDiv.className = "seat";
+    seatDiv.textContent = `席${seatIndex}`;
+    seatDiv.dataset.seatIndex = seatIndex;
+    seatDiv.draggable = true;
+
+    // **中央揃えの調整**
+    const px = MARGIN + xx * scale;
+    const py = MARGIN + yy * scale;
+
+    seatDiv.style.width = SEAT_SIZE + "px";
+    seatDiv.style.height = SEAT_SIZE + "px";
+
+    // **整数グリッドに正しく合うように修正**
+    seatDiv.style.left = Math.round(px - SEAT_SIZE / 2) + "px";
+    seatDiv.style.top = Math.round(py - SEAT_SIZE / 2) + "px";
+
+    // **フォントサイズを `scale` に応じて調整**
+    let fontSize = Math.max(8, Math.min(16, scale * 0.5)); // 8px～16pxの範囲でスケーリング
+    seatDiv.style.fontSize = `${fontSize}px`;
+
+    // ドラッグ開始
+    seatDiv.addEventListener("dragstart", (ev) => {
+        ev.dataTransfer.setData("seatIndex", seatIndex);
+    });
+
+    seatMapEl.appendChild(seatDiv);
+  }
+
+
+  // ============ (5) ドロップ領域の処理 ============
+  function handleDragOver(ev) {
+    ev.preventDefault(); 
+  }
+
+  function handleDrop(ev) {
+    ev.preventDefault();
+    const seatIndex = parseInt(ev.dataTransfer.getData("seatIndex"), 10);
+    if (isNaN(seatIndex)) return;
+
+    const rect = seatMapEl.getBoundingClientRect();
+    let offsetX = ev.clientX - rect.left - MARGIN;
+    let offsetY = ev.clientY - rect.top  - MARGIN;
+
+    // ピクセル -> 実数座標
+    let gridX = offsetX / scale;
+    let gridY = offsetY / scale;
+
+    // 整数グリッドに丸める
+    const newX = Math.round(gridX);
+    const newY = Math.round(gridY);
+    if (newX < 0 || newY < 0) return;
+
+    // 座標を更新
+    seatCoordinate[seatIndex][0] = newX;
+    seatCoordinate[seatIndex][1] = newY;
+
+    // 対応入力欄を更新
+    const xInput = document.getElementById(`coordX_${seatIndex}`);
+    const yInput = document.getElementById(`coordY_${seatIndex}`);
+    if (xInput && yInput) {
+      xInput.value = newX;
+      yInput.value = newY;
+    }
+
+    // 部分更新: seatIndex の座席だけ移動し直す
+    moveSeat(seatIndex);
+  }
+
+  // ============ (6) 部分更新: 1つの座席だけ座標を更新 ============
+  function moveSeat(seatIndex) {
+    const seatDiv = seatMapEl.querySelector(`.seat[data-seat-index='${seatIndex}']`);
+    if (!seatDiv) return;
+
+    const [xx, yy] = seatCoordinate[seatIndex];
+    const px = MARGIN + xx * scale;
+    const py = MARGIN + yy * scale;
+
+    // **中央揃えのための修正**
+    seatDiv.style.left = Math.round(px - SEAT_SIZE / 2) + "px";
+    seatDiv.style.top = Math.round(py - SEAT_SIZE / 2) + "px";
+
+    // **フォントサイズを `scale` に応じて変更**
+    let fontSize = Math.max(8, Math.min(16, scale * 0.5));
+    seatDiv.style.fontSize = `${fontSize}px`;
+  }
+
+
+
+  // ============ (7) 希望配置のドラッグ&ドロップUIを生成 ============
+  function setupSeatPreferences() {
+    const N = +document.getElementById("inputN").value;
+    prefsAreaEl.innerHTML = "";  // UIリセット
+
+    seatPreferenceList = [];
+    for (let i = 0; i < N; i++) {
+        seatPreferenceList.push([...Array(N).keys()]); // デフォルトの並び
+    }
+
+    for (let i = 0; i < N; i++) {
+        const personDiv = document.createElement("div");
+        personDiv.style.margin = "10px 0";
+        personDiv.style.display = "flex"; // 席リストと人リストを横並びにする
+        personDiv.style.alignItems = "center";
+
+        // (1) タイトル「人 i の希望配置」
+        let label = document.createElement("h4");
+        label.textContent = `人${i} の希望配置`;
+        label.style.marginRight = "20px";
+        personDiv.appendChild(label);
+
+        // (2) 席リスト (左側、固定)
+        let seatList = document.createElement("ul");
+        seatList.className = "sortable-list";
+        seatList.style.pointerEvents = "none"; // ユーザーがドラッグできないようにする
+
+        for (let seatID = 0; seatID < N; seatID++) {
+            let seatItem = document.createElement("li");
+            seatItem.className = "sortable-item";
+            seatItem.textContent = `席${seatID}`;
+            seatItem.style.background = "#ddd";  // 固定リストの色
+            seatList.appendChild(seatItem);
+        }
+
+        // (3) ドラッグ可能な人リスト (右側)
+        let personList = document.createElement("ul");
+        personList.id = `prefList_${i}`;
+        personList.className = "sortable-list";
+        personList.style.marginLeft = "10px";
+
+        seatPreferenceList[i].forEach((personID) => {
+            let item = document.createElement("li");
+            item.className = "sortable-item";
+            item.textContent = `人${personID}`;
+            item.dataset.personId = personID;
+            personList.appendChild(item);
+        });
+
+        personDiv.appendChild(seatList);
+        personDiv.appendChild(personList);
+        prefsAreaEl.appendChild(personDiv);
+
+        // (4) Sortable.js の適用（ドラッグ可能にする）
+        new Sortable(personList, {
+            animation: 150,
+            ghostClass: "sortable-ghost",
+            onEnd: () => {
+                const newOrder = [];
+                personList.querySelectorAll(".sortable-item").forEach((li) => {
+                    newOrder.push(parseInt(li.dataset.personId, 10));
+                });
+                seatPreferenceList[i] = newOrder;
+            },
+        });
+    }
+    // ここで計算実行ボタンを表示
+    document.getElementById("callApiBtn").style.display = "inline-block"; // 計算実行ボタンを表示
+
+  }
+
+
+  // ============ (8) APIへ送信 ============
+  // API呼び出し部分を修正
+  async function callApi() {
+    const N = +document.getElementById("inputN").value;
+    const M = +document.getElementById("inputM").value;
+
+    const body = {
+        N,
+        seatPreferenceList,
+        seatCoordinate,
+        M,
+    };
+
+    console.log("📤 送信データ:", JSON.stringify(body, null, 2)); // デバッグ用
+
+    try {
+        const res = await fetch("/arrange", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+        });
+
+        if (!res.ok) {
+            throw new Error(`サーバーエラー: ${res.status}`);
+        }
+
+        const json = await res.json();
+        console.log("📩 受信データ:", json);
+
+        //document.getElementById("result").textContent = JSON.stringify(json, null, 2);
+        
+        // best_configurations を描画
+        displayBestConfigurations(json.best_configurations);
+    } catch (e) {
+        console.error("APIエラー:", e);
+        document.getElementById("result").textContent = "エラー: " + e.message;
+    }
+  }
+
+
+  // best_configurations を表示するエリアを作成
+  function displayBestConfigurations(bestConfigurations) {
+    const bestConfigArea = document.getElementById("bestConfigArea");
+    if (!bestConfigArea) {
+        const newDiv = document.createElement("div");
+        newDiv.id = "bestConfigArea";
+        newDiv.innerHTML = "<h2>最適な席配置</h2>";
+        document.body.appendChild(newDiv);
+    }
+
+    const area = document.getElementById("bestConfigArea");
+    area.innerHTML = "<h2>AIの提案する席配置</h2>";
+
+    bestConfigurations.forEach((config, index) => {
+        setTimeout(() => {
+            const mapDiv = document.createElement("div");
+            mapDiv.className = "seat-map";
+            mapDiv.style.position = "relative";
+            mapDiv.style.border = "1px solid black";
+            mapDiv.style.marginBottom = "20px";
+            mapDiv.style.padding = "10px";
+
+            // ラベル
+            const label = document.createElement("h3");
+            label.textContent = `配置パターン ${index + 1}`;
+            area.appendChild(label);
+
+            requestAnimationFrame(() => {
+                // 座席を配置
+                seatCoordinate.forEach(([x, y], seatIndex) => {
+                    const seatDiv = document.createElement("div");
+                    seatDiv.className = "seat";
+                    seatDiv.style.width = "60px";
+                    seatDiv.style.height = "40px";
+                    seatDiv.style.position = "absolute";
+                    seatDiv.style.left = `${x * 70}px`;
+                    seatDiv.style.top = `${y * 50}px`;
+                    seatDiv.style.background = "#ccc";
+                    seatDiv.style.border = "2px solid #444";
+                    seatDiv.style.display = "flex";
+                    seatDiv.style.alignItems = "center";
+                    seatDiv.style.justifyContent = "center";
+                    seatDiv.style.fontSize = "14px";
+
+                    // AIが決めた人の割り当てを表示
+                    seatDiv.textContent = `人${config[seatIndex]}`;
+
+                    mapDiv.appendChild(seatDiv);
+                });
+
+                area.appendChild(mapDiv);
+            });
+        }, index * 100); // 0.1秒ごとに次の配置を描画
+    });
+  }
+
+
+
+  // ========== (9) マップ枠のサイズ変更機能 ==========
+  const resizeHandle = document.getElementById("resizeHandle");
+  let isResizing = false;
+
+  // マウスダウン時にリサイズ開始
+  resizeHandle.addEventListener("mousedown", (e) => {
+    isResizing = true;
+    document.addEventListener("mousemove", resize);
+    document.addEventListener("mouseup", () => {
+      isResizing = false;
+      updateAllSeats();  // リサイズ後に座席を再描画
+      document.removeEventListener("mousemove", resize);
+    });
+  });
+
+  function resize(e) {
+    if (!isResizing) return;
+    
+    const newWidth = e.clientX - seatMapEl.offsetLeft;
+    const newHeight = e.clientY - seatMapEl.offsetTop;
+    
+    // サイズ制限（最小300px, 最大1200px）
+    seatMapEl.style.width = `${Math.max(300, Math.min(newWidth, 1200))}px`;
+    seatMapEl.style.height = `${Math.max(300, Math.min(newHeight, 800))}px`;
+  }
+
+  function registerResizeEvent() {
+    const resizeHandle = document.getElementById("resizeHandle");
+    if (!resizeHandle) return;
+
+    let isResizing = false;
+    let startX, startY;
+    let startWidth, startHeight;
+
+    resizeHandle.addEventListener("mousedown", (e) => {
+        isResizing = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        startWidth = seatMapEl.offsetWidth;
+        startHeight = seatMapEl.offsetHeight;
+
+        document.addEventListener("mousemove", resize);
+        document.addEventListener("mouseup", stopResize);
+    });
+
+    function resize(e) {
+        if (!isResizing) return;
+
+        // マウスの移動距離を計算
+        const deltaX = e.clientX - startX;
+        const deltaY = e.clientY - startY;
+
+        // `seatMapEl` のサイズのみ変更 (座席やグリッドのサイズは変えない)
+        seatMapEl.style.width = `${Math.max(300, Math.min(startWidth + deltaX, 1200))}px`;
+        seatMapEl.style.height = `${Math.max(300, Math.min(startHeight + deltaY, 800))}px`;
+    }
+
+    function stopResize() {
+        isResizing = false;
+        document.removeEventListener("mousemove", resize);
+        document.removeEventListener("mouseup", stopResize);
+    }
+  }
+
+
+</script>
+</body>
+</html>
