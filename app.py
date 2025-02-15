@@ -41,8 +41,8 @@ def arrange():
     return jsonify(result)
 
 if __name__ == "__main__":
-    # Flaskサーバを起動
-    app.run(debug=True) # デバッグモードを有効にしてサーバを起動
+    app.run(host="0.0.0.0", port=10000, debug=True)
+
 
 
 
