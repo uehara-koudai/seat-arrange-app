@@ -65,7 +65,7 @@ def arrange():
 
 
     #席替えの計算を呼び出す
-    if N <= 8:
+    if N <= 7:
         result = seat_arrange_ExhaustiveSearch(N, seatPreferenceList, seatCoordinate, M)
         print("全状態探索で最適化")
     else:
