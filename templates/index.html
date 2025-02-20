@@ -530,6 +530,27 @@
 
     console.log("📤 送信データ:", JSON.stringify(body, null, 2)); // デバッグ用
 
+
+    // (1) 計算開始時の時間を記録
+    const startTime = performance.now();
+    const startDate = new Date();
+    const startTimeStr = startDate.toLocaleTimeString(); // "HH:MM:SS" 形式で取得
+
+    // (2) 計算実行ボタンを無効化して連打防止
+    const callApiBtn = document.getElementById("callApiBtn");
+    callApiBtn.disabled = true;
+    callApiBtn.textContent = "計算中...";
+
+    // (3) 計算中メッセージを表示（リアルタイム更新用）
+    const resultDiv = document.getElementById("result");
+    let elapsedTime = 0; // 経過時間（秒）
+
+    // (4) 1秒ごとに経過時間を更新
+    const intervalId = setInterval(() => {
+        elapsedTime = ((performance.now() - startTime) / 1000).toFixed(2);
+        resultDiv.textContent = `🌀 最適な席配置を探索中... (経過時間: ${elapsedTime} 秒)`;
+    }, 1000);
+
     try {
         const res = await fetch("/arrange", {
             method: "POST",
@@ -544,14 +565,41 @@
         const json = await res.json();
         console.log("📩 受信データ:", json);
 
+        // best_configurations が undefined でないことを確認
+        if (!json.best_configurations) {
+            console.error("🚨 best_configurations が undefined!");
+            resultDiv.textContent = "エラーが発生しました。もう一度試してください。";
+            resultDiv.style.color = "red"; // エラーメッセージの色を赤に
+            callApiBtn.disabled = false; // ボタンを再度有効化
+            callApiBtn.textContent = "計算実行"; // ボタンのテキストを元に戻す
+            return;
+        } 
+
         //document.getElementById("result").textContent = JSON.stringify(json, null, 2);
         
+        // (4) 計算完了時の時間を取得
+        const endTime = performance.now();
+        const elapsedTime = ((endTime - startTime) / 1000).toFixed(2); // 秒単位（小数点2桁）
+
+        // (5) 計算完了メッセージを表示
+        resultDiv.textContent = `✅ 計算が完了しました！ (処理時間: ${elapsedTime} 秒)`;
+        resultDiv.style.color = "green"; // 完了メッセージの色を緑に
+
         // best_configurations を描画
         displayBestConfigurations(json.best_configurations);
     } catch (e) {
         console.error("APIエラー:", e);
-        document.getElementById("result").textContent = "エラー: " + e.message;
+        resultDiv.textContent = "❌ エラー: " + e.message;
+        resultDiv.style.color = "red"; // エラーメッセージの色を赤に
+    }finally {
+        // (6) ボタンを再度有効化
+        callApiBtn.disabled = false;
+        callApiBtn.textContent = "計算実行"; // ボタンのテキストを元に戻す
+
+        // (8) タイマーを停止
+        clearInterval(intervalId);
     }
+
   }
 
 
