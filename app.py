@@ -15,20 +15,23 @@ np.show_config()
 
 def convert_numpy_types(obj):
     """
-    NumPy の型 (int64, float64, ndarray) を標準の Python 型 (int, float, list) に変換する
+    NumPy のスカラーや配列を Python 標準型に再帰的に変換する
     """
-    if isinstance(obj, np.int64) or isinstance(obj, np.int32):  # NumPy の int を Python の int に変換
-        return int(obj)
-    elif isinstance(obj, np.float64) or isinstance(obj, np.float32):  # NumPy の float を Python の float に変換
-        return float(obj)
-    elif isinstance(obj, np.ndarray):  # NumPy の配列をリストに変換
+    # NumPy のスカラー型全般を Python のスカラーに変換
+    if isinstance(obj, np.generic):
+        return obj.item()
+    # 配列はリストへ変換
+    elif isinstance(obj, np.ndarray):
         return obj.tolist()
-    elif isinstance(obj, list):  # リストの中身を再帰的に変換
+    # リストの中身も再帰的に変換
+    elif isinstance(obj, list):
         return [convert_numpy_types(x) for x in obj]
-    elif isinstance(obj, dict):  # 辞書の中身を再帰的に変換
+    # 辞書の値も再帰的に変換
+    elif isinstance(obj, dict):
         return {k: convert_numpy_types(v) for k, v in obj.items()}
     else:
-        return obj  # 変換不要な場合はそのまま返す
+        # 変換不要な型はそのまま返す
+        return obj
 
 
 app = Flask(__name__) #Flaskアプリケーションのインスタンスが作成される．
